@@ -23,6 +23,7 @@ function connect() {
   ws = new WebSocket(`${protocol}//${location.host}/ws`);
 
   ws.onopen = () => {
+    window._ws = ws;
     document.getElementById('conn-status').textContent = 'Connected';
     sendConfig(readConfig());
     sendTerrainRequest();
