@@ -6,6 +6,10 @@ Origin at Wheel A (apex). X points rearward (toward B/C), Y points left, Z up.
 Arms extend from the origin (Wheel A) rearward. Arm 1 goes to Wheel B (right, -Y),
 Arm 2 goes to Wheel C (left, +Y). The splay angle is measured from the X axis
 in the XY plane.
+
+Tilt axes:
+- tilt_pitch: rotation around Y axis (parallel to brace). Tips platform forward/backward.
+- tilt_roll: rotation around X axis (perpendicular to brace). Tips platform left/right.
 """
 
 from __future__ import annotations
@@ -61,50 +65,87 @@ class PlatformConfig:
         }
 
 
+def tilt_rotation_matrix(tilt_pitch: float = 0.0, tilt_roll: float = 0.0) -> np.ndarray:
+    """Compute combined tilt rotation matrix R = Ry(pitch) @ Rx(roll).
+
+    Args:
+        tilt_pitch: Rotation around Y axis (tips forward/backward).
+        tilt_roll: Rotation around X axis (tips left/right).
+
+    Returns:
+        3x3 rotation matrix.
+    """
+    cp, sp = np.cos(tilt_pitch), np.sin(tilt_pitch)
+    cr, sr = np.cos(tilt_roll), np.sin(tilt_roll)
+
+    # Ry(pitch) @ Rx(roll)
+    return np.array([
+        [cp,      sp * sr,   sp * cr],
+        [0.0,     cr,        -sr],
+        [-sp,     cp * sr,   cp * cr],
+    ])
+
+
 def compute_wheel_positions(
     config: PlatformConfig,
-    arm_pivots: tuple[float, float] = (0.0, 0.0),
+    tilt_pitch: float = 0.0,
+    tilt_roll: float = 0.0,
+    arm_reaches: tuple[float, float] = (0.0, 0.0),
+    *,
+    arm_pivots: tuple[float, float] | None = None,
 ) -> dict[str, np.ndarray]:
     """Compute wheel A, B, C positions in the body frame.
 
     Args:
         config: Platform geometry parameters.
-        arm_pivots: (pivot_b, pivot_c) angles in radians. Positive = wheel moves down.
+        tilt_pitch: Shared pitch tilt angle (radians). 0 = vertical shafts.
+        tilt_roll: Shared roll tilt angle (radians). 0 = vertical shafts.
+        arm_reaches: (reach_b, reach_c) angles in radians. How far each arm
+            extends downward. Positive = wheel moves down.
+        arm_pivots: DEPRECATED. If provided, used as arm_reaches with zero tilt
+            for backward compatibility.
 
     Returns:
         Dict with keys "A", "B", "C" mapping to 3D position arrays.
     """
+    # Backward compatibility: old code passes arm_pivots=(b, c)
+    if arm_pivots is not None:
+        arm_reaches = arm_pivots
+        tilt_pitch = 0.0
+        tilt_roll = 0.0
+
     wheel_a = np.array([0.0, 0.0, 0.0])
     splay = config.arm_splay_angle
-    pivot_b, pivot_c = arm_pivots
+    reach_b, reach_c = arm_reaches
 
-    # Arm to Wheel B (right side, -Y direction)
-    wheel_b = wheel_a + config.arm_length * np.array([
-        np.cos(splay) * np.cos(pivot_b),
-        -np.sin(splay) * np.cos(pivot_b),
-        -np.sin(pivot_b),
-    ])
+    R = tilt_rotation_matrix(tilt_pitch, tilt_roll)
 
-    # Arm to Wheel C (left side, +Y direction)
-    wheel_c = wheel_a + config.arm_length * np.array([
-        np.cos(splay) * np.cos(pivot_c),
-        np.sin(splay) * np.cos(pivot_c),
-        -np.sin(pivot_c),
-    ])
+    def _arm_endpoint(reach: float, splay_sign: float) -> np.ndarray:
+        # Arm direction in body frame before tilt
+        dx = config.arm_length * np.cos(splay) * np.cos(reach)
+        dy = config.arm_length * splay_sign * np.sin(splay) * np.cos(reach)
+        dz = -config.arm_length * np.sin(reach)
+        offset = np.array([dx, dy, dz])
+        # Apply tilt rotation
+        return R @ offset
+
+    wheel_b = wheel_a + _arm_endpoint(reach_b, -1.0)
+    wheel_c = wheel_a + _arm_endpoint(reach_c, 1.0)
 
     return {"A": wheel_a, "B": wheel_b, "C": wheel_c}
 
 
 def compute_brace_endpoints(
     config: PlatformConfig,
-    arm_pivots: tuple[float, float] = (0.0, 0.0),
+    tilt_pitch: float = 0.0,
+    tilt_roll: float = 0.0,
+    arm_reaches: tuple[float, float] = (0.0, 0.0),
+    *,
+    arm_pivots: tuple[float, float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute cross brace attachment points on each arm.
-
-    Returns:
-        (point_on_arm_b, point_on_arm_c) as 3D arrays.
-    """
-    wheels = compute_wheel_positions(config, arm_pivots)
+    """Compute cross brace attachment points on each arm."""
+    wheels = compute_wheel_positions(config, tilt_pitch, tilt_roll, arm_reaches,
+                                     arm_pivots=arm_pivots)
     t = config.brace_position
     point_b = wheels["A"] + t * (wheels["B"] - wheels["A"])
     point_c = wheels["A"] + t * (wheels["C"] - wheels["A"])
@@ -113,8 +154,13 @@ def compute_brace_endpoints(
 
 def compute_brace_center(
     config: PlatformConfig,
-    arm_pivots: tuple[float, float] = (0.0, 0.0),
+    tilt_pitch: float = 0.0,
+    tilt_roll: float = 0.0,
+    arm_reaches: tuple[float, float] = (0.0, 0.0),
+    *,
+    arm_pivots: tuple[float, float] | None = None,
 ) -> np.ndarray:
     """Compute center of the cross brace (primary cargo mount)."""
-    left, right = compute_brace_endpoints(config, arm_pivots)
+    left, right = compute_brace_endpoints(config, tilt_pitch, tilt_roll, arm_reaches,
+                                           arm_pivots=arm_pivots)
     return (left + right) / 2.0
