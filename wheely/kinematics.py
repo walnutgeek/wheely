@@ -21,32 +21,64 @@ class FKResult:
     wheel_contacts: dict[str, np.ndarray]
     wheel_headings: dict[str, float]
     brace_center: np.ndarray
-    arm_pivots: tuple[float, float]
+    tilt_pitch: float
+    tilt_roll: float
+    arm_reaches: tuple[float, float]
 
 
 @dataclass
 class IKResult:
     """Result of inverse kinematics computation."""
 
-    arm_pivots: tuple[float, float]
+    tilt_pitch: float
+    tilt_roll: float
+    arm_reaches: tuple[float, float]
     body_z: float
     levelness: float
 
 
 def forward_kinematics(
     config: PlatformConfig,
-    arm_pivots: tuple[float, float] = (0.0, 0.0),
+    tilt_pitch: float = 0.0,
+    tilt_roll: float = 0.0,
+    arm_reaches: tuple[float, float] = (0.0, 0.0),
     steerings: tuple[float, float, float] = (0.0, 0.0, 0.0),
+    *,
+    arm_pivots: tuple[float, float] | None = None,
 ) -> FKResult:
-    """Compute wheel positions and brace center from arm pivots and steering."""
-    wheels = compute_wheel_positions(config, arm_pivots)
-    brace = compute_brace_center(config, arm_pivots)
+    """Compute wheel positions and brace center from tilt, reaches, and steering.
+
+    Args:
+        config: Platform geometry parameters.
+        tilt_pitch: Shared pitch tilt angle (radians).
+        tilt_roll: Shared roll tilt angle (radians).
+        arm_reaches: (reach_b, reach_c) angles in radians.
+        steerings: (steer_a, steer_b, steer_c) wheel steering angles.
+        arm_pivots: DEPRECATED. If provided, used as arm_reaches with zero tilt
+            for backward compatibility.
+
+    Returns:
+        FKResult with wheel positions, headings, brace center, and DOF values.
+    """
+    if arm_pivots is not None:
+        arm_reaches = arm_pivots
+        tilt_pitch = 0.0
+        tilt_roll = 0.0
+
+    wheels = compute_wheel_positions(
+        config, tilt_pitch=tilt_pitch, tilt_roll=tilt_roll, arm_reaches=arm_reaches
+    )
+    brace = compute_brace_center(
+        config, tilt_pitch=tilt_pitch, tilt_roll=tilt_roll, arm_reaches=arm_reaches
+    )
     headings = {"A": steerings[0], "B": steerings[1], "C": steerings[2]}
     return FKResult(
         wheel_contacts=wheels,
         wheel_headings=headings,
         brace_center=brace,
-        arm_pivots=arm_pivots,
+        tilt_pitch=tilt_pitch,
+        tilt_roll=tilt_roll,
+        arm_reaches=arm_reaches,
     )
 
 
@@ -56,20 +88,23 @@ def inverse_kinematics(
     body_xy: tuple[float, float] = (0.0, 0.0),
     body_yaw: float = 0.0,
 ) -> IKResult:
-    """Solve arm pivot angles to place wheels B and C on terrain.
+    """Solve arm reach angles to place wheels B and C on terrain.
+
+    IK assumes vertical shafts (tilt_pitch=0, tilt_roll=0) and solves only
+    the reach angles that place each wheel on the terrain surface.
 
     Wheel A is at the body origin projected onto terrain.
     """
     bx, by = body_xy
     body_z = terrain.height(bx, by)
 
-    def _solve_pivot(splay_sign: float) -> float:
+    def _solve_reach(splay_sign: float) -> float:
         splay = config.arm_splay_angle
 
-        def _error(pivot: float) -> float:
-            dx = config.arm_length * np.cos(splay) * np.cos(pivot)
-            dy = config.arm_length * splay_sign * np.sin(splay) * np.cos(pivot)
-            dz = -config.arm_length * np.sin(pivot)
+        def _error(reach: float) -> float:
+            dx = config.arm_length * np.cos(splay) * np.cos(reach)
+            dy = config.arm_length * splay_sign * np.sin(splay) * np.cos(reach)
+            dz = -config.arm_length * np.sin(reach)
             cos_y, sin_y = np.cos(body_yaw), np.sin(body_yaw)
             wx = bx + cos_y * dx - sin_y * dy
             wy = by + sin_y * dx + cos_y * dy
@@ -84,14 +119,18 @@ def inverse_kinematics(
         )
         return float(result.x)
 
-    pivot_b = _solve_pivot(-1.0)
-    pivot_c = _solve_pivot(1.0)
+    reach_b = _solve_reach(-1.0)
+    reach_c = _solve_reach(1.0)
 
-    brace = compute_brace_center(config, (pivot_b, pivot_c))
+    brace = compute_brace_center(
+        config, tilt_pitch=0.0, tilt_roll=0.0, arm_reaches=(reach_b, reach_c)
+    )
     levelness = float(abs(brace[2]))
 
     return IKResult(
-        arm_pivots=(pivot_b, pivot_c),
+        tilt_pitch=0.0,
+        tilt_roll=0.0,
+        arm_reaches=(reach_b, reach_c),
         body_z=body_z,
         levelness=levelness,
     )
