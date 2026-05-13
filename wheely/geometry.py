@@ -29,6 +29,8 @@ class PlatformConfig:
     brace_length: float = 0.5
     wheel_radius: float = 0.15
     wheel_width: float = 0.08
+    clearance: float = 0.03        # gap above wheel top to lower arm attachment (m)
+    arm_height: float = 0.06       # vertical height of arm/brace parallelogram (m)
     pivot_range: float = np.radians(45)
     steering_range: float = np.radians(90)
 
@@ -49,6 +51,10 @@ class PlatformConfig:
             errors.append(f"wheel_radius {self.wheel_radius} outside [0.05, 0.3]")
         if not 0.03 <= self.wheel_width <= 0.15:
             errors.append(f"wheel_width {self.wheel_width} outside [0.03, 0.15]")
+        if not 0.01 <= self.clearance <= 0.2:
+            errors.append(f"clearance {self.clearance} outside [0.01, 0.2]")
+        if not 0.02 <= self.arm_height <= 0.3:
+            errors.append(f"arm_height {self.arm_height} outside [0.02, 0.3]")
         return errors
 
     def to_dict(self) -> dict:
@@ -60,6 +66,8 @@ class PlatformConfig:
             "brace_length": self.brace_length,
             "wheel_radius": self.wheel_radius,
             "wheel_width": self.wheel_width,
+            "clearance": self.clearance,
+            "arm_height": self.arm_height,
             "pivot_range": self.pivot_range,
             "steering_range": self.steering_range,
         }

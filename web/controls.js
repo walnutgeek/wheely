@@ -8,22 +8,28 @@ export function readConfig() {
     arm_splay_angle: parseFloat(document.getElementById('splay-angle').value) * Math.PI / 180,
     brace_position: parseFloat(document.getElementById('brace-pos').value),
     wheel_radius: parseFloat(document.getElementById('wheel-radius').value),
+    clearance: parseFloat(document.getElementById('clearance').value),
+    arm_height: parseFloat(document.getElementById('arm-height-viz').value),
   };
 }
 
 export function setupControls(onChange) {
-  const sliders = ['arm-length', 'splay-angle', 'brace-pos', 'wheel-radius'];
+  const sliders = ['arm-length', 'splay-angle', 'brace-pos', 'wheel-radius', 'clearance', 'arm-height-viz'];
   const valEls = {
     'arm-length': 'val-arm-length',
     'splay-angle': 'val-splay',
     'brace-pos': 'val-brace-pos',
     'wheel-radius': 'val-wheel-r',
+    'clearance': 'val-clearance',
+    'arm-height-viz': 'val-arm-height',
   };
   const formatters = {
     'arm-length': v => v.toFixed(2) + ' m',
     'splay-angle': v => v.toFixed(0) + '\u00B0',
     'brace-pos': v => v.toFixed(2),
     'wheel-radius': v => v.toFixed(2) + ' m',
+    'clearance': v => v.toFixed(3) + ' m',
+    'arm-height-viz': v => v.toFixed(3) + ' m',
   };
 
   for (const id of sliders) {
