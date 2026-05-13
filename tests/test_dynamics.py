@@ -1,17 +1,29 @@
 """Tests for wheely.dynamics module."""
 
+import math
+
 import numpy as np
 import pytest
 
 from wheely.dynamics import (
+    ActiveArmsLeveling,
+    ActiveBraceLeveling,
     PassiveStrategy,
-    ActiveStrategy,
-    SpringDamperStrategy,
     SimState,
+    SpringDamperStrategy,
+    StepMetrics,
     simulate_step,
 )
-from wheely.geometry import PlatformConfig
-from wheely.terrain import FlatTerrain, SlopeTerrain
+from wheely.geometry import PlatformConfig, compute_wheel_positions
+from wheely.terrain import FlatTerrain, SlopeTerrain, SinusoidalTerrain
+
+
+class TestSimState:
+    def test_from_config_defaults(self):
+        state = SimState.from_config(PlatformConfig())
+        assert state.tilt_pitch == 0.0
+        assert state.tilt_roll == 0.0
+        assert state.arm_reaches == (0.0, 0.0)
 
 
 class TestPassiveStrategy:
@@ -19,81 +31,141 @@ class TestPassiveStrategy:
         strategy = PassiveStrategy()
         state = SimState.from_config(PlatformConfig())
         torques = strategy.compute_torques(state)
-        assert torques[0] == pytest.approx(0.0)
-        assert torques[1] == pytest.approx(0.0)
+        assert torques == (0.0, 0.0, 0.0, 0.0)
 
 
-class TestActiveStrategy:
-    def test_returns_torque_toward_target(self):
-        strategy = ActiveStrategy(target_pivots=(0.0, 0.0), kp=10.0)
+class TestActiveArmsLeveling:
+    def test_pitch_correction(self):
+        strategy = ActiveArmsLeveling(kp=10.0, kd=1.0)
         state = SimState.from_config(PlatformConfig())
-        state.arm_pivots = (0.3, -0.2)
+        state.tilt_pitch = 0.1
         torques = strategy.compute_torques(state)
-        assert torques[0] < 0  # pivot_b=0.3, target=0, torque should be negative
-        assert torques[1] > 0  # pivot_c=-0.2, target=0, torque should be positive
+        # pitch torque should oppose the tilt
+        assert torques[0] < 0  # torque_pitch negative to correct positive pitch
+
+    def test_roll_correction(self):
+        strategy = ActiveArmsLeveling(kp=10.0, kd=1.0)
+        state = SimState.from_config(PlatformConfig())
+        state.tilt_roll = 0.1
+        torques = strategy.compute_torques(state)
+        # roll torque should oppose the tilt
+        assert torques[1] < 0  # torque_roll negative to correct positive roll
+
+    def test_zero_tilt_zero_torque(self):
+        strategy = ActiveArmsLeveling(kp=10.0, kd=1.0)
+        state = SimState.from_config(PlatformConfig())
+        torques = strategy.compute_torques(state)
+        assert all(t == pytest.approx(0.0) for t in torques)
+
+
+class TestActiveBraceLeveling:
+    def test_roll_correction(self):
+        strategy = ActiveBraceLeveling(kp_roll=10.0, kd_roll=1.0)
+        state = SimState.from_config(PlatformConfig())
+        state.tilt_roll = 0.1
+        torques = strategy.compute_torques(state)
+        # Should produce roll torque but no direct pitch torque
+        assert torques[1] < 0  # roll correction
+        assert torques[0] == pytest.approx(0.0)  # no direct pitch control
 
 
 class TestSpringDamperStrategy:
     def test_spring_force_at_displacement(self):
         strategy = SpringDamperStrategy(stiffness=100.0, damping=5.0)
         state = SimState.from_config(PlatformConfig())
-        state.arm_pivots = (0.1, -0.1)
-        state.arm_velocities = (0.0, 0.0)
+        state.arm_reaches = (0.1, -0.1)
+        state.arm_reach_velocities = (0.0, 0.0)
         torques = strategy.compute_torques(state)
-        assert torques[0] == pytest.approx(-10.0)
-        assert torques[1] == pytest.approx(10.0)
-
-    def test_damping_opposes_velocity(self):
-        strategy = SpringDamperStrategy(stiffness=0.0, damping=10.0)
-        state = SimState.from_config(PlatformConfig())
-        state.arm_pivots = (0.0, 0.0)
-        state.arm_velocities = (1.0, -0.5)
-        torques = strategy.compute_torques(state)
-        assert torques[0] == pytest.approx(-10.0)
-        assert torques[1] == pytest.approx(5.0)
+        # Spring on reaches: torques[2] and torques[3]
+        assert torques[2] == pytest.approx(-10.0)
+        assert torques[3] == pytest.approx(10.0)
 
 
 class TestSimulateStep:
-    def test_passive_on_flat_stays_stable(self):
+    def test_returns_state_and_metrics(self):
         config = PlatformConfig()
         terrain = FlatTerrain()
         strategy = PassiveStrategy()
         state = SimState.from_config(config)
-        new_state = simulate_step(state, config, terrain, strategy, dt=0.01)
-        assert np.all(np.isfinite([new_state.arm_pivots[0], new_state.arm_pivots[1]]))
+        new_state, metrics = simulate_step(state, config, terrain, strategy, dt=0.01)
+        assert isinstance(new_state, SimState)
+        assert isinstance(metrics, StepMetrics)
 
-    def test_passive_settles_on_flat_terrain(self):
-        """With terrain contact, passive arms should settle to rest on the ground."""
+    def test_no_penetration_on_flat(self):
+        """Wheels should never go below terrain surface."""
+        config = PlatformConfig()
+        terrain = FlatTerrain()
+        strategy = PassiveStrategy()
+        state = SimState.from_config(config)
+        for _ in range(200):
+            state, _ = simulate_step(state, config, terrain, strategy, dt=0.01)
+            wheels = compute_wheel_positions(
+                config, state.tilt_pitch, state.tilt_roll, state.arm_reaches)
+            for name in ("B", "C"):
+                wheel_z = wheels[name][2]
+                terrain_z = terrain.height(wheels[name][0], wheels[name][1])
+                assert wheel_z >= terrain_z - 1e-6, \
+                    f"Wheel {name} penetrated terrain at step: {wheel_z} < {terrain_z}"
+
+    def test_no_penetration_on_bumpy(self):
+        """Wheels should never go below terrain on bumpy terrain."""
+        config = PlatformConfig()
+        terrain = SinusoidalTerrain(amplitude=0.15, wavelength=2.0)
+        strategy = PassiveStrategy()
+        state = SimState.from_config(config)
+        for _ in range(200):
+            state, _ = simulate_step(state, config, terrain, strategy, dt=0.01)
+            wheels = compute_wheel_positions(
+                config, state.tilt_pitch, state.tilt_roll, state.arm_reaches)
+            for name in ("B", "C"):
+                wheel_z = wheels[name][2]
+                terrain_z = terrain.height(wheels[name][0], wheels[name][1])
+                assert wheel_z >= terrain_z - 1e-6
+
+    def test_passive_settles_on_flat(self):
         config = PlatformConfig()
         terrain = FlatTerrain()
         strategy = PassiveStrategy()
         state = SimState.from_config(config)
         for _ in range(1000):
-            state = simulate_step(state, config, terrain, strategy, dt=0.01)
-        # Arms should have settled (low velocity)
-        assert abs(state.arm_velocities[0]) < 0.1
-        assert abs(state.arm_velocities[1]) < 0.1
+            state, _ = simulate_step(state, config, terrain, strategy, dt=0.01)
+        assert abs(state.arm_reach_velocities[0]) < 0.1
+        assert abs(state.arm_reach_velocities[1]) < 0.1
 
-    def test_passive_settles_on_slope(self):
-        """On a slope, arms should settle at different angles."""
+    def test_active_arms_converges_on_forward_slope(self):
         config = PlatformConfig()
         terrain = SlopeTerrain(slope_x=0.3)
-        strategy = PassiveStrategy()
+        strategy = ActiveArmsLeveling(kp=50.0, kd=10.0)
         state = SimState.from_config(config)
-        for _ in range(1000):
-            state = simulate_step(state, config, terrain, strategy, dt=0.01)
-        # Arms should have settled (low velocity)
-        assert abs(state.arm_velocities[0]) < 0.1
-        assert abs(state.arm_velocities[1]) < 0.1
-
-    def test_spring_damper_returns_to_rest(self):
-        config = PlatformConfig()
-        terrain = FlatTerrain()
-        strategy = SpringDamperStrategy(stiffness=200.0, damping=20.0)
-        state = SimState.from_config(config)
-        state.arm_pivots = (0.2, -0.2)
         for _ in range(500):
-            state = simulate_step(state, config, terrain, strategy, dt=0.01)
-        # Should converge near rest (terrain contact + spring both push toward equilibrium)
-        assert abs(state.arm_velocities[0]) < 0.1
-        assert abs(state.arm_velocities[1]) < 0.1
+            state, metrics = simulate_step(state, config, terrain, strategy, dt=0.01)
+        assert abs(math.degrees(state.tilt_pitch)) < 5.0
+
+    def test_active_arms_converges_on_cross_slope(self):
+        config = PlatformConfig()
+        terrain = SlopeTerrain(slope_y=0.3)
+        strategy = ActiveArmsLeveling(kp=50.0, kd=10.0)
+        state = SimState.from_config(config)
+        for _ in range(500):
+            state, metrics = simulate_step(state, config, terrain, strategy, dt=0.01)
+        assert abs(math.degrees(state.tilt_roll)) < 5.0
+
+    def test_active_brace_converges_roll_on_cross_slope(self):
+        config = PlatformConfig()
+        terrain = SlopeTerrain(slope_y=0.3)
+        strategy = ActiveBraceLeveling(kp_roll=50.0, kd_roll=10.0)
+        state = SimState.from_config(config)
+        for _ in range(500):
+            state, metrics = simulate_step(state, config, terrain, strategy, dt=0.01)
+        assert abs(math.degrees(state.tilt_roll)) < 5.0
+
+    def test_metrics_energy_monotonic(self):
+        config = PlatformConfig()
+        terrain = SlopeTerrain(slope_x=0.2)
+        strategy = ActiveArmsLeveling(kp=50.0, kd=10.0)
+        state = SimState.from_config(config)
+        prev_energy = 0.0
+        for _ in range(100):
+            state, metrics = simulate_step(state, config, terrain, strategy, dt=0.01)
+            assert metrics.cumulative_energy >= prev_energy - 1e-10
+            prev_energy = metrics.cumulative_energy
