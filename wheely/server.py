@@ -174,6 +174,15 @@ async def websocket_endpoint(ws: WebSocket):
             elif msg_type == "start_sim":
                 running = True
                 sim_state = SimState.from_config(config)
+                # Solve IK to get initial reaches that place wheels on terrain
+                ik = inverse_kinematics(
+                    config, terrain,
+                    body_xy=sim_state.body_xy,
+                    body_yaw=sim_state.body_yaw,
+                )
+                sim_state.arm_reaches = ik.arm_reaches
+                sim_state.tilt_pitch = ik.tilt_pitch
+                sim_state.tilt_roll = ik.tilt_roll
                 while running:
                     sim_state, metrics = simulate_step(
                         sim_state, config, terrain, strategy, dt=0.016

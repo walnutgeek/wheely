@@ -31,6 +31,7 @@ _L_COG = 0.3    # Distance from pivot to center-of-gravity along arm (m)
 
 _CONTACT_STIFFNESS = 5000.0
 _CONTACT_DAMPING = 100.0
+_TILT_DAMPING = 5.0      # Structural damping on tilt DOFs (friction at joints)
 
 
 # ---------------------------------------------------------------------------
@@ -197,13 +198,15 @@ def _compute_contact_for_arm(
     arm_reaches: tuple[float, float],
     which: str,
     reach_velocity: float,
-    tilt_pitch_velocity: float,
-    tilt_roll_velocity: float,
-) -> tuple[float, float, float, bool]:
-    """Compute contact torques for one arm.
+) -> tuple[float, bool]:
+    """Compute contact torque on a single arm's reach DOF.
+
+    Contact forces drive the arm reach only (the arm absorbs terrain contact
+    by extending/retracting).  Tilt DOFs are driven by gravity and active
+    leveling, not by individual wheel contacts.
 
     Returns:
-        (torque_on_pitch, torque_on_roll, torque_on_reach, in_contact)
+        (torque_on_reach, in_contact)
     """
     wz, terrain_z, wheel_body = _wheel_world_z(
         config, terrain, body_xy, body_yaw, tilt_pitch, tilt_roll, arm_reaches, which
@@ -211,20 +214,15 @@ def _compute_contact_for_arm(
 
     penetration = terrain_z - wz  # positive when below terrain
     if penetration <= 0:
-        return 0.0, 0.0, 0.0, False
+        return 0.0, False
 
     # Contact force magnitude (upward)
-    # Use reach velocity as proxy for vertical velocity of wheel
     contact_force = _CONTACT_STIFFNESS * penetration - _CONTACT_DAMPING * reach_velocity
 
-    # Compute Jacobian: how does wheel_z change with each DOF?
-    # We use numerical partial derivatives for accuracy with the tilt coupling.
+    # Jacobian: d(wheel_z)/d(reach) -- only the reach DOF
     eps = 1e-6
-    splay = config.arm_splay_angle
     idx = 0 if which == "B" else 1
-    splay_sign = -1.0 if which == "B" else 1.0
 
-    # d(wheel_z)/d(reach) -- partial derivative
     reach_plus = list(arm_reaches)
     reach_minus = list(arm_reaches)
     reach_plus[idx] = arm_reaches[idx] + eps
@@ -235,29 +233,8 @@ def _compute_contact_for_arm(
                                       tilt_pitch, tilt_roll, tuple(reach_minus), which)
     dwz_dreach = (wz_plus - wz_minus) / (2 * eps)
 
-    # d(wheel_z)/d(tilt_pitch)
-    wz_pp, _, _ = _wheel_world_z(config, terrain, body_xy, body_yaw,
-                                   tilt_pitch + eps, tilt_roll, arm_reaches, which)
-    wz_pm, _, _ = _wheel_world_z(config, terrain, body_xy, body_yaw,
-                                   tilt_pitch - eps, tilt_roll, arm_reaches, which)
-    dwz_dpitch = (wz_pp - wz_pm) / (2 * eps)
-
-    # d(wheel_z)/d(tilt_roll)
-    wz_rp, _, _ = _wheel_world_z(config, terrain, body_xy, body_yaw,
-                                   tilt_pitch, tilt_roll + eps, arm_reaches, which)
-    wz_rm, _, _ = _wheel_world_z(config, terrain, body_xy, body_yaw,
-                                   tilt_pitch, tilt_roll - eps, arm_reaches, which)
-    dwz_droll = (wz_rp - wz_rm) / (2 * eps)
-
-    # Virtual work principle: generalized torque = F * (dz/dq)
-    # Contact force F is upward (positive). If increasing q lowers wheel
-    # (dz/dq < 0), torque is negative, correctly opposing the motion that
-    # caused penetration.
     torque_reach = contact_force * dwz_dreach
-    torque_pitch = contact_force * dwz_dpitch
-    torque_roll = contact_force * dwz_droll
-
-    return torque_pitch, torque_roll, torque_reach, True
+    return torque_reach, True
 
 
 # ---------------------------------------------------------------------------
@@ -438,23 +415,25 @@ def simulate_step(
     grav_torque_pitch = -_M * _G * _L_COG * math.sin(state.tilt_pitch)
     grav_torque_roll = -_M * _G * _L_COG * math.sin(state.tilt_roll)
 
-    # --- Terrain contact torques ---
-    contact_pitch_b, contact_roll_b, contact_reach_b, in_contact_b = _compute_contact_for_arm(
+    # --- Terrain contact torques (reach only) ---
+    contact_reach_b, in_contact_b = _compute_contact_for_arm(
         config, terrain, state.body_xy, state.body_yaw,
         state.tilt_pitch, state.tilt_roll, state.arm_reaches, "B",
         state.arm_reach_velocities[0],
-        state.tilt_pitch_velocity, state.tilt_roll_velocity,
     )
-    contact_pitch_c, contact_roll_c, contact_reach_c, in_contact_c = _compute_contact_for_arm(
+    contact_reach_c, in_contact_c = _compute_contact_for_arm(
         config, terrain, state.body_xy, state.body_yaw,
         state.tilt_pitch, state.tilt_roll, state.arm_reaches, "C",
         state.arm_reach_velocities[1],
-        state.tilt_pitch_velocity, state.tilt_roll_velocity,
     )
 
+    # --- Tilt damping (structural friction at joints) ---
+    damp_pitch = -_TILT_DAMPING * state.tilt_pitch_velocity
+    damp_roll = -_TILT_DAMPING * state.tilt_roll_velocity
+
     # --- Net torques ---
-    net_pitch = strat_pitch + grav_torque_pitch + contact_pitch_b + contact_pitch_c
-    net_roll = strat_roll + grav_torque_roll + contact_roll_b + contact_roll_c
+    net_pitch = strat_pitch + grav_torque_pitch + damp_pitch
+    net_roll = strat_roll + grav_torque_roll + damp_roll
     net_reach_b = strat_reach_b + contact_reach_b
     net_reach_c = strat_reach_c + contact_reach_c
 
