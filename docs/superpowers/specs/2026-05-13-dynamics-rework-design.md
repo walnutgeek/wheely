@@ -2,7 +2,7 @@
 
 ## Overview
 
-Rework the wheely dynamics simulation to accurately model the parallelogram linkage mechanics and add active leveling control. The current sim treats each arm pivot as independent and uses only a soft penalty spring for terrain contact. The revised model enforces parallelogram coupling (all shafts parallel, single tilt DOF), adds a hard surface constraint (wheels never penetrate terrain), models body tipping under gravity, and introduces two competing active leveling strategies for comparison.
+Rework the wheely dynamics simulation to accurately model the parallelogram linkage mechanics and add active leveling control. The current sim treats each arm pivot as independent and uses only a soft penalty spring for terrain contact. The revised model enforces parallelogram coupling (all shafts parallel, two-axis tilt), adds a hard surface constraint (wheels never penetrate terrain), models body tipping under gravity, and introduces two competing active leveling strategies for comparison.
 
 ## Problem Statement
 
@@ -18,8 +18,23 @@ Three issues with the current dynamics:
 
 The three parallelogram linkages (two in the arms, one in the brace) create a kinematic constraint: all three wheel shafts remain parallel. This reduces the system to:
 
-- **Shaft tilt** (`shaft_tilt`: float, radians): The angle of all three shafts from vertical. Shared across the entire platform. When `shaft_tilt=0`, shafts are vertical. Positive tilt means shafts lean in the +X direction (forward).
-- **Arm reaches** (`reach_b`, `reach_c`: floats, radians): How far each arm extends downward. These are independent -- on bumpy terrain one arm reaches further than the other. The parallelogram ensures the shaft orientation at the wheel end stays at `shaft_tilt` regardless of reach angle.
+- **Shaft tilt -- two axes** (`tilt_pitch`, `tilt_roll`: floats, radians): The orientation of all three shafts, decomposed into two components:
+  - `tilt_pitch`: Tilt perpendicular to the brace axis. When the platform pitches forward/backward, both arms need to adjust in the same direction. Controlled by both arm actuators moving together.
+  - `tilt_roll`: Tilt along the brace axis. When the platform rolls left/right (cross-slope), one arm extends while the other retracts. Controlled by the brace actuator directly, or by arm actuators moving in opposite directions.
+  - When both are zero, shafts are vertical. The parallelogram linkages enforce that all three shafts share the same `(tilt_pitch, tilt_roll)`.
+- **Arm reaches** (`reach_b`, `reach_c`: floats, radians): How far each arm extends downward. These are independent -- on bumpy terrain one arm reaches further than the other. The parallelogram ensures the shaft orientation at the wheel end stays at `(tilt_pitch, tilt_roll)` regardless of reach angle.
+
+### Tilt Axis Decomposition
+
+The brace connects the two arms laterally. Define the coordinate system for tilt:
+- **Brace direction**: The vector from arm B attachment to arm C attachment (roughly the Y axis in body frame).
+- **Pitch axis**: Parallel to brace direction. Rotation around this axis tips the platform forward/backward.
+- **Roll axis**: Perpendicular to brace direction (roughly the X axis in body frame). Rotation around this axis tips the platform left/right.
+
+This decomposition is natural because:
+- The brace actuator (in Active Brace strategy) directly controls rotation around the brace direction → it directly controls **roll**.
+- The arm actuators (in Active Arms strategy) control rotation around both axes: moving arms in the same direction → pitch; moving arms in opposite directions → roll.
+- The IMU mounted on any shaft measures both `tilt_pitch` and `tilt_roll` (2-axis inclinometer is sufficient since both angles are relative to gravity).
 
 ### Relation to Current State
 
@@ -31,19 +46,21 @@ arm_velocities: tuple[float, float]  # independent velocities
 
 Revised `SimState`:
 ```python
-shaft_tilt: float                     # shared tilt (theta), 0 = vertical
-shaft_tilt_velocity: float            # angular velocity of tilt
+tilt_pitch: float                     # pitch tilt (perpendicular to brace), 0 = vertical
+tilt_roll: float                      # roll tilt (along brace), 0 = vertical
+tilt_pitch_velocity: float
+tilt_roll_velocity: float
 arm_reaches: tuple[float, float]      # (reach_b, reach_c), independent
 arm_reach_velocities: tuple[float, float]
 ```
 
 ### Geometry Mapping
 
-The wheel position for arm B in world frame becomes a function of both `shaft_tilt` and `reach_b`:
-- `shaft_tilt` affects the orientation of the entire arm assembly (rotates the arm base)
+The wheel position for arm B in world frame becomes a function of `(tilt_pitch, tilt_roll, reach_b)`:
+- `tilt_pitch` and `tilt_roll` together define the shaft orientation (applied as rotations to the arm assembly)
 - `reach_b` affects how far down the arm extends (determines wheel height relative to body)
 
-The `compute_wheel_positions` function in `geometry.py` needs to accept `(shaft_tilt, reach_b, reach_c)` instead of `(pivot_b, pivot_c)`. The old `pivot_b` was conflating tilt and reach into one angle.
+The `compute_wheel_positions` function in `geometry.py` needs to accept `(tilt_pitch, tilt_roll, reach_b, reach_c)` instead of `(pivot_b, pivot_c)`.
 
 ### Geometry Math
 
@@ -54,21 +71,26 @@ For arm B (splay_sign = -1), wheel position in body frame:
 arm_dir_x = cos(splay)
 arm_dir_y = splay_sign * sin(splay)   # -sin(splay) for B, +sin(splay) for C
 
-# reach_b determines how far the arm extends (angle from horizontal)
-# shaft_tilt rotates the entire arm assembly around the arm direction axis
+# reach determines how far the arm extends (angle from horizontal)
 dx = arm_length * arm_dir_x * cos(reach_b)
 dy = arm_length * arm_dir_y * cos(reach_b)
 dz = -arm_length * sin(reach_b)
 
-# Then apply shaft_tilt rotation around the arm's horizontal axis
-# This tilts the shaft (and the arm endpoint) by shaft_tilt
-# The tilt axis is perpendicular to the arm direction in the XY plane
-wheel_x = body_x + cos(yaw) * dx - sin(yaw) * dy + tilt_offset_x(shaft_tilt)
-wheel_y = body_y + sin(yaw) * dx + cos(yaw) * dy + tilt_offset_y(shaft_tilt)
-wheel_z = body_z + dz + tilt_offset_z(shaft_tilt)
+# Apply tilt as two sequential rotations:
+# 1. tilt_roll rotates around X axis (perpendicular to brace)
+# 2. tilt_pitch rotates around Y axis (parallel to brace)
+# Combined as a rotation matrix R = Ry(tilt_pitch) @ Rx(tilt_roll)
+# Applied to the arm endpoint vector (dx, dy, dz)
+
+R = rotation_matrix(tilt_pitch, tilt_roll)
+wheel_offset = R @ [dx, dy, dz]
+
+wheel_x = body_x + cos(yaw) * wheel_offset[0] - sin(yaw) * wheel_offset[1]
+wheel_y = body_y + sin(yaw) * wheel_offset[0] + cos(yaw) * wheel_offset[1]
+wheel_z = body_z + wheel_offset[2]
 ```
 
-The exact `tilt_offset` terms depend on how shaft_tilt is defined relative to the arm pivot axis. The implementation will work this out in `geometry.py` with tests to verify the expected behavior (shaft_tilt=0 → vertical shafts, shaft_tilt=angle → all shafts tilted by that angle).
+The implementation will define the rotation matrix and verify with tests that `(tilt_pitch=0, tilt_roll=0)` → vertical shafts, and that both tilt components independently rotate all shafts by the same angle.
 
 ## Hard Surface Constraint
 
@@ -84,7 +106,7 @@ After semi-implicit Euler integration, enforce:
 
 ```
 for each arm (b, c):
-    compute wheel_z from (shaft_tilt, reach)
+    compute wheel_z from (tilt_pitch, tilt_roll, reach)
     terrain_z = terrain.height(wheel_x, wheel_y)
     if wheel_z < terrain_z:
         adjust reach so wheel_z == terrain_z  (solve analytically)
@@ -95,26 +117,34 @@ This guarantees no visual penetration regardless of timestep or stiffness.
 
 ## Tipping Under Gravity
 
-When the platform is on a slope or when wheels lose terrain contact:
+When the platform is on a slope or when wheels lose terrain contact, gravity creates torques on both tilt axes:
 
-- Gravity creates a torque on the `shaft_tilt` DOF proportional to the platform's center of mass offset from the support base.
-- `gravity_torque = -M * g * L_cog * sin(shaft_tilt)` where `M` is total mass, `L_cog` is the distance from the tilt axis to the center of gravity.
-- When wheels are in contact with terrain, the terrain reaction force counteracts this torque.
-- When wheels are NOT in contact (e.g., one arm is reaching into a dip), the unbalanced torque causes the platform to tip.
+- **Pitch torque**: `gravity_pitch = -M * g * L_cog * sin(tilt_pitch)` -- tips the platform forward/backward.
+- **Roll torque**: `gravity_roll = -M * g * L_cog * sin(tilt_roll)` -- tips the platform left/right.
+- `M` is total mass, `L_cog` is the distance from the tilt axis to the center of gravity.
+- When wheels are in contact with terrain, the terrain reaction forces counteract these torques.
+- When wheels are NOT in contact (e.g., one arm is reaching into a dip), the unbalanced torques cause the platform to tip on both axes.
 
 ## Active Leveling Strategies
 
-Both strategies use a PD controller reading `shaft_tilt` from an IMU:
+Both strategies use a PD controller reading `(tilt_pitch, tilt_roll)` from a 2-axis IMU:
 
 ```python
-torque = -kp * shaft_tilt - kd * shaft_tilt_velocity
+torque_pitch = -kp * tilt_pitch - kd * tilt_pitch_velocity
+torque_roll  = -kp * tilt_roll  - kd * tilt_roll_velocity
 ```
 
 ### Strategy 1: Active Arms Leveling (`ActiveArmsLeveling`)
 
 - Actuators on both arm parallelograms.
-- The controller torque applies directly to the `shaft_tilt` DOF.
-- Both arms simultaneously adjust their geometry to drive `shaft_tilt → 0`.
+- Two independent actuators → can control both tilt axes directly.
+- **Pitch correction**: Both arms adjust in the same direction (same torque sign).
+- **Roll correction**: Arms adjust in opposite directions (opposite torque signs).
+- The controller decomposes the two tilt errors into per-arm torques:
+  ```
+  torque_arm_b = torque_pitch + torque_roll
+  torque_arm_c = torque_pitch - torque_roll
+  ```
 - Arm reaches adjust as a consequence to maintain terrain contact.
 - **Parameters**: `kp` (proportional gain), `kd` (derivative gain).
 
@@ -122,15 +152,14 @@ torque = -kp * shaft_tilt - kd * shaft_tilt_velocity
 
 - Single actuator on the brace parallelogram.
 - Arms are passive (gravity + terrain contact determines reach).
-- The brace actuator applies torque to `shaft_tilt` through the coupling between the brace and arm geometry.
-- Potentially different effective gain and response dynamics due to the indirect actuation path.
-- The brace actuator changes the coupling geometry, which indirectly affects how the arm reaches translate to shaft tilt.
-- **Parameters**: `kp` (proportional gain), `kd` (derivative gain), `brace_gain` (mechanical advantage factor for the indirect actuation path).
+- The brace actuator directly controls **roll** (tilt along the brace axis) since the brace connects the two arms laterally.
+- **Pitch correction is indirect**: The brace can't directly pitch the platform forward/backward. It can only influence pitch through the coupling between roll correction and arm geometry. This is the key limitation that makes this strategy interesting to compare.
+- **Parameters**: `kp_roll` (proportional gain for roll), `kd_roll` (derivative gain for roll), `brace_gain` (mechanical advantage factor).
 
 ### Existing Strategies (Retained)
 
-- `PassiveStrategy`: No actuation. Arms settle via gravity + terrain contact. Shaft tilt drifts freely.
-- `SpringDamperStrategy`: Spring return on reaches around neutral. No shaft tilt control.
+- `PassiveStrategy`: No actuation. Arms settle via gravity + terrain contact. Tilt drifts freely on both axes.
+- `SpringDamperStrategy`: Spring return on reaches around neutral. No tilt control.
 
 ## Metrics & Comparison
 
@@ -141,9 +170,12 @@ The `simulate_step` function returns both the new state and a metrics dict:
 ```python
 @dataclass
 class StepMetrics:
-    shaft_tilt_deg: float       # current tilt in degrees
-    actuator_torque: float      # torque applied this step (N*m)
-    actuator_power: float       # |torque * velocity| this step (W)
+    tilt_pitch_deg: float       # pitch tilt in degrees
+    tilt_roll_deg: float        # roll tilt in degrees
+    tilt_total_deg: float       # total tilt magnitude (sqrt(pitch^2 + roll^2))
+    actuator_torque_pitch: float  # pitch torque this step (N*m)
+    actuator_torque_roll: float   # roll torque this step (N*m)
+    actuator_power: float       # total |torque * velocity| this step (W)
     cumulative_energy: float    # running total of energy used (J)
     reach_b_deg: float          # arm B reach in degrees
     reach_c_deg: float          # arm C reach in degrees
@@ -153,10 +185,11 @@ class StepMetrics:
 
 ### Comparison Criteria
 
-- **Convergence speed**: Time to reach `|shaft_tilt| < 1 degree` from a disturbed initial state.
+- **Convergence speed**: Time to reach `tilt_total < 1 degree` from a disturbed initial state.
 - **Energy efficiency**: Total actuator energy to reach steady state.
-- **Steady-state accuracy**: Residual shaft tilt in steady state.
-- **Robustness**: Behavior when traversing bumpy terrain (does tilt stay controlled?).
+- **Steady-state accuracy**: Residual tilt magnitude in steady state.
+- **Pitch vs roll performance**: Active Brace can directly control roll but not pitch -- how does this affect convergence on different terrain types (forward slope vs cross-slope vs bumpy)?
+- **Robustness**: Behavior when traversing bumpy terrain (does tilt stay controlled on both axes?).
 
 ## Frontend Changes
 
@@ -170,11 +203,13 @@ The frame message adds a `metrics` dict:
     "brace_center": [...],
     "support_triangle": [...],
     "stability_margin": 0.12,
-    "shaft_tilt": 0.05,
     "metrics": {
-        "shaft_tilt_deg": 2.87,
-        "actuator_torque": -1.23,
-        "actuator_power": 0.45,
+        "tilt_pitch_deg": 2.87,
+        "tilt_roll_deg": -1.05,
+        "tilt_total_deg": 3.06,
+        "actuator_torque_pitch": -1.23,
+        "actuator_torque_roll": 0.45,
+        "actuator_power": 0.67,
         "cumulative_energy": 12.3,
         "reach_b_deg": 15.2,
         "reach_c_deg": -8.1,
@@ -187,15 +222,16 @@ The frame message adds a `metrics` dict:
 ### Info Bar Updates
 
 Replace current info cards:
-- "Pivot B" → "Shaft Tilt" (degrees from vertical)
-- "Pivot C" → "Energy" (cumulative actuator energy, J)
+- "Pivot B" → "Pitch" (tilt_pitch in degrees)
+- "Pivot C" → "Roll" (tilt_roll in degrees)
 - Keep "Stability Margin" and "Sim Time"
 
 ### Metrics Chart
 
 A new panel (below viewport, beside info bar, or as a collapsible overlay) showing a live time-series line chart:
-- **Line 1**: Shaft tilt (degrees) over time -- primary axis
-- **Line 2**: Actuator torque (N*m) over time -- secondary axis
+- **Line 1**: Pitch tilt (degrees) over time
+- **Line 2**: Roll tilt (degrees) over time
+- **Line 3**: Total actuator torque magnitude over time (secondary axis)
 - Canvas-based rendering, no external charting library
 - Rolling window of ~10 seconds of data
 - Clears on strategy change or sim restart
@@ -210,28 +246,29 @@ Add to the existing strategy select:
 
 ### `wheely/dynamics.py`
 
-- Revise `SimState` to use `shaft_tilt`, `shaft_tilt_velocity`, `arm_reaches`, `arm_reach_velocities`.
+- Revise `SimState` to use `tilt_pitch`, `tilt_roll`, `tilt_pitch_velocity`, `tilt_roll_velocity`, `arm_reaches`, `arm_reach_velocities`.
 - Add `StepMetrics` dataclass.
-- Add `ActiveArmsLeveling` strategy class.
-- Add `ActiveBraceLeveling` strategy class.
+- Add `ActiveArmsLeveling` strategy class (controls both pitch and roll).
+- Add `ActiveBraceLeveling` strategy class (controls roll directly, pitch indirectly).
 - Revise `simulate_step` to:
-  1. Compute strategy torque on `shaft_tilt`
-  2. Compute gravity torque on `shaft_tilt`
+  1. Compute strategy torques on `tilt_pitch` and `tilt_roll`
+  2. Compute gravity torques on both tilt axes
   3. Compute terrain contact per arm (affects `arm_reaches`)
-  4. Integrate `shaft_tilt` and `arm_reaches` (semi-implicit Euler)
+  4. Integrate `tilt_pitch`, `tilt_roll`, and `arm_reaches` (semi-implicit Euler)
   5. Hard clamp: enforce no-penetration on each arm
   6. Return `(new_state, metrics)`
-- Revise `_compute_terrain_contact_torque` to work with the new reach-based model.
+- Revise `_compute_terrain_contact_torque` to work with the new two-axis tilt + reach model. Terrain contact on each arm contributes to both pitch and roll torques depending on the arm's position relative to the brace axis.
 
 ### `wheely/geometry.py`
 
-- Update `compute_wheel_positions` to accept `(shaft_tilt, reach_b, reach_c)` instead of `(pivot_b, pivot_c)`.
-- The mapping: the old `pivot` was a single angle. Now it decomposes into `shaft_tilt` (shared) affecting arm base orientation, and `reach` (per-arm) affecting extension.
+- Update `compute_wheel_positions` to accept `(tilt_pitch, tilt_roll, reach_b, reach_c)` instead of `(pivot_b, pivot_c)`.
+- The mapping: the old `pivot` was a single angle per arm. Now it decomposes into two shared tilt angles affecting the entire arm assembly orientation, and per-arm reach affecting extension.
+- Add a rotation matrix helper that composes pitch and roll rotations.
 - Update `compute_brace_endpoints` and `compute_brace_center` accordingly.
 
 ### `wheely/kinematics.py`
 
-- Update `inverse_kinematics` to solve for `(shaft_tilt, reach_b, reach_c)` instead of `(pivot_b, pivot_c)`.
+- Update `inverse_kinematics` to solve for `(tilt_pitch, tilt_roll, reach_b, reach_c)` instead of `(pivot_b, pivot_c)`. This becomes a 4-variable optimization (or can be decomposed: solve reaches first to place wheels on terrain, then compute the tilt that results).
 - Update `forward_kinematics` to accept the new state format.
 
 ### `wheely/server.py`
@@ -243,7 +280,7 @@ Add to the existing strategy select:
 ### Backward Compatibility
 
 The old `arm_pivots` concept is replaced entirely. The WebSocket API changes:
-- Frame responses use `shaft_tilt`, `reach_b`, `reach_c` instead of `arm_pivots`.
+- Frame responses use `tilt_pitch`, `tilt_roll`, `reach_b`, `reach_c` instead of `arm_pivots`.
 - The `set_config` message stays the same (geometry parameters unchanged).
 - The `set_strategy` message gains two new valid names.
 
@@ -254,39 +291,40 @@ The old `arm_pivots` concept is replaced entirely. The WebSocket API changes:
 - Specific test: Start with wheel above bumpy terrain, run 100 steps, verify no penetration ever occurs.
 
 ### Parallelogram Coupling
-- Test that FK with `(shaft_tilt, reach_b, reach_c)` produces shaft orientations that are parallel for both wheels.
-- Test that changing `shaft_tilt` rotates all shafts by the same amount.
+- Test that FK with `(tilt_pitch, tilt_roll, reach_b, reach_c)` produces shaft orientations that are parallel for both wheels.
+- Test that changing `tilt_pitch` rotates all shafts by the same pitch angle.
+- Test that changing `tilt_roll` rotates all shafts by the same roll angle.
+- Test that `(tilt_pitch=0, tilt_roll=0)` gives vertical shafts.
 
 ### Active Leveling Convergence
-- Start on a 20-degree slope with `shaft_tilt = 0` (shafts initially vertical but terrain is tilted, so tilt will develop).
-- Run `ActiveArmsLeveling` for 500 steps. Assert `|shaft_tilt| < 1 degree`.
-- Run `ActiveBraceLeveling` for 500 steps. Assert `|shaft_tilt| < 1 degree`.
-- Compare energy used.
+- **Forward slope test**: Start on a 20-degree forward slope. Both strategies should converge `tilt_pitch → 0`. `ActiveArmsLeveling` corrects directly. `ActiveBraceLeveling` must correct pitch indirectly -- test whether it can.
+- **Cross-slope test**: Start on a 20-degree cross-slope. Both strategies should converge `tilt_roll → 0`. `ActiveBraceLeveling` corrects roll directly here.
+- **Combined slope test**: Start on a slope with both pitch and roll components. `ActiveArmsLeveling` should handle both. `ActiveBraceLeveling` may struggle with the pitch component.
+- Compare energy used across all scenarios.
 
 ### Passive Settling
 - Existing tests for `PassiveStrategy` continue to work with the new state format.
-- Arms should settle via gravity + terrain contact (reaches adapt, tilt may drift).
+- Arms should settle via gravity + terrain contact (reaches adapt, tilt drifts on both axes).
 
 ### Metrics
 - Test that `cumulative_energy` increases monotonically.
-- Test that `actuator_torque` sign matches the correction direction.
+- Test that `actuator_torque_pitch` and `actuator_torque_roll` signs match the correction direction.
 
 ## Scope Boundaries
 
 ### In Scope
-- Revised DOF model (shaft_tilt + arm_reaches)
+- Revised DOF model (tilt_pitch + tilt_roll + arm_reaches)
+- Two-axis tilt: pitch (perpendicular to brace) and roll (along brace)
 - Hard surface constraint (no penetration)
-- Gravity tipping on shaft_tilt
-- Two active leveling strategies (arms vs brace)
-- Per-step metrics (tilt, torque, energy)
-- Live metrics chart in frontend
+- Gravity tipping on both tilt axes
+- Two active leveling strategies (arms vs brace) with 2-axis IMU
+- Per-step metrics (pitch, roll, torque, energy)
+- Live metrics chart in frontend (pitch + roll + torque lines)
 - Updated info bar
 - Updated strategy dropdown
-- Tests for all new physics
+- Tests for all new physics including per-axis convergence
 
 ### Out of Scope
 - Body XY motion (driving/steering simulation)
-- Multiple tilt axes (only single-axis tilt for now)
 - Flex or compliance in the parallelogram linkages
 - Terrain friction model
-- 3D IMU (roll + pitch) -- single axis tilt only for now
