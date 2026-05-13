@@ -15,7 +15,7 @@ export function createTerrainMesh(gridData) {
       const idx = j * cols + i;
       const x = pos.getX(idx);
       const y = pos.getY(idx);
-      const h = heights[j][i];
+      const h = heights[rows - 1 - j][i];
       pos.setXYZ(idx, x, h, -y);
     }
   }
