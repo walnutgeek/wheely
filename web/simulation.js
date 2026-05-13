@@ -5,6 +5,7 @@ import { createScene } from '/static/scene.js';
 import { createPlatformGroup, updatePlatform } from '/static/platform-viz.js';
 import { createTerrainMesh } from '/static/terrain-viz.js';
 import { setupControls, readConfig, updateInfoBar } from '/static/controls.js';
+import { updateChart, clearChart } from '/static/metrics-chart.js';
 
 let ws = null;
 let platformViz = null;
@@ -35,6 +36,9 @@ function connect() {
     if (msg.type === 'frame') {
       updatePlatform(platformViz, msg, currentConfig);
       updateInfoBar(msg);
+      if (msg.metrics && msg.time !== undefined) {
+        updateChart(msg.metrics, msg.time);
+      }
     } else if (msg.type === 'terrain_grid') {
       if (terrainMesh) scene.remove(terrainMesh);
       terrainMesh = createTerrainMesh(msg);
@@ -78,6 +82,7 @@ document.getElementById('terrain-select').addEventListener('change', (e) => {
 
 document.getElementById('strategy-select').addEventListener('change', (e) => {
   send({ type: 'set_strategy', name: e.target.value });
+  clearChart();
 });
 
 document.getElementById('btn-ik').addEventListener('click', () => {
@@ -92,6 +97,7 @@ document.getElementById('btn-sim').addEventListener('click', () => {
     btn.textContent = 'Run Sim';
     simRunning = false;
   } else {
+    clearChart();
     send({ type: 'start_sim' });
     btn.classList.add('active');
     btn.textContent = 'Stop';

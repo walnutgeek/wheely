@@ -8,7 +8,7 @@
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #1a1a2e; color: #e0e0e0; overflow: hidden; }
 
-  #app { display: grid; grid-template-columns: 1fr 320px; grid-template-rows: 48px 1fr 180px; height: 100vh; }
+  #app { display: grid; grid-template-columns: 1fr 320px; grid-template-rows: 48px 1fr auto; height: 100vh; }
 
   #header { grid-column: 1 / -1; display: flex; align-items: center; padding: 0 16px; background: #16213e; border-bottom: 1px solid #0f3460; }
   #header h1 { font-size: 18px; font-weight: 600; color: #e94560; }
@@ -33,7 +33,8 @@
   .btn:hover { background: #1a4080; }
   .btn.active { background: #e94560; border-color: #e94560; }
 
-  #infobar { grid-column: 1 / 2; background: #16213e; border-top: 1px solid #0f3460; padding: 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; align-items: start; }
+  #infobar { grid-column: 1 / 2; background: #16213e; border-top: 1px solid #0f3460; padding: 12px; display: grid; grid-template-columns: repeat(4, 1fr); grid-template-rows: auto auto; gap: 12px; align-items: start; }
+  #metrics-chart { grid-column: 1 / -1; width: 100%; height: 150px; background: #0a0a1a; border-radius: 6px; }
   .info-card { background: #0f3460; border-radius: 6px; padding: 10px; }
   .info-card .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; color: #888; margin-bottom: 4px; }
   .info-card .value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
@@ -85,7 +86,8 @@
     <div class="control">
       <select id="strategy-select">
         <option value="passive">Passive</option>
-        <option value="active">Active (PID)</option>
+        <option value="active_arms_leveling">Active Arms (IMU)</option>
+        <option value="active_brace_leveling">Active Brace (IMU)</option>
         <option value="spring_damper">Spring-Damper</option>
       </select>
     </div>
@@ -103,17 +105,18 @@
       <div class="value" id="info-margin">--</div>
     </div>
     <div class="info-card">
-      <div class="label">Pivot B</div>
-      <div class="value" id="info-pivot-b">0.0°</div>
+      <div class="label">Pitch</div>
+      <div class="value" id="info-pitch">0.0°</div>
     </div>
     <div class="info-card">
-      <div class="label">Pivot C</div>
-      <div class="value" id="info-pivot-c">0.0°</div>
+      <div class="label">Roll</div>
+      <div class="value" id="info-roll">0.0°</div>
     </div>
     <div class="info-card">
       <div class="label">Sim Time</div>
       <div class="value" id="info-time">0.00 s</div>
     </div>
+    <canvas id="metrics-chart" width="600" height="150"></canvas>
   </div>
 </div>
 
