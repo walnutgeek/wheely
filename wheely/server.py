@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -14,10 +15,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from wheely.dynamics import (
-    ActiveStrategy,
+    ActiveArmsLeveling,
+    ActiveBraceLeveling,
     PassiveStrategy,
     SimState,
     SpringDamperStrategy,
+    StepMetrics,
     simulate_step,
 )
 from wheely.geometry import PlatformConfig
@@ -56,7 +59,8 @@ TERRAIN_PRESETS = {
 
 STRATEGY_PRESETS = {
     "passive": lambda: PassiveStrategy(),
-    "active": lambda: ActiveStrategy(target_pivots=(0.0, 0.0), kp=50.0),
+    "active_arms_leveling": lambda: ActiveArmsLeveling(kp=10.0, kd=1.0),
+    "active_brace_leveling": lambda: ActiveBraceLeveling(kp_roll=10.0, kd_roll=1.0),
     "spring_damper": lambda: SpringDamperStrategy(stiffness=200.0, damping=20.0),
 }
 
@@ -81,19 +85,30 @@ async def list_strategies():
     return list(STRATEGY_PRESETS.keys())
 
 
-def _build_frame(config, terrain, arm_pivots, steerings):
+def _build_frame(config, terrain, tilt_pitch, tilt_roll, arm_reaches, steerings, metrics=None):
     """Compute a single simulation frame for sending to the client."""
-    fk = forward_kinematics(config, arm_pivots=arm_pivots, steerings=steerings)
+    fk = forward_kinematics(
+        config,
+        tilt_pitch=tilt_pitch,
+        tilt_roll=tilt_roll,
+        arm_reaches=arm_reaches,
+        steerings=steerings,
+    )
     triangle = compute_support_triangle(fk.wheel_contacts)
     margin = compute_stability_margin(fk.brace_center, triangle)
 
-    return {
+    frame = {
         "wheels": {k: v.tolist() for k, v in fk.wheel_contacts.items()},
         "brace_center": fk.brace_center.tolist(),
         "support_triangle": triangle.tolist(),
         "stability_margin": margin,
-        "arm_pivots": list(arm_pivots),
+        "tilt_pitch": tilt_pitch,
+        "tilt_roll": tilt_roll,
+        "arm_reaches": list(arm_reaches),
     }
+    if metrics is not None:
+        frame["metrics"] = asdict(metrics)
+    return frame
 
 
 @app.websocket("/ws")
@@ -136,7 +151,7 @@ async def websocket_endpoint(ws: WebSocket):
                 x = msg.get("x", 0.0)
                 y = msg.get("y", 0.0)
                 yaw = msg.get("yaw", 0.0)
-                sim_state = SimState(body_xy=(x, y), body_yaw=yaw)
+                sim_state = SimState(body_xy=(x, y), body_yaw=yaw, arm_reaches=(0.0, 0.0))
 
             elif msg_type == "solve_ik":
                 ik = inverse_kinematics(
@@ -144,9 +159,13 @@ async def websocket_endpoint(ws: WebSocket):
                     body_xy=sim_state.body_xy,
                     body_yaw=sim_state.body_yaw,
                 )
-                sim_state.arm_pivots = ik.arm_pivots
+                sim_state.arm_reaches = ik.arm_reaches
+                sim_state.tilt_pitch = ik.tilt_pitch
+                sim_state.tilt_roll = ik.tilt_roll
                 frame = _build_frame(
-                    config, terrain, sim_state.arm_pivots, sim_state.steerings
+                    config, terrain,
+                    sim_state.tilt_pitch, sim_state.tilt_roll,
+                    sim_state.arm_reaches, sim_state.steerings,
                 )
                 frame["type"] = "frame"
                 frame["levelness"] = ik.levelness
@@ -156,14 +175,18 @@ async def websocket_endpoint(ws: WebSocket):
                 running = True
                 sim_state = SimState.from_config(config)
                 while running:
-                    sim_state = simulate_step(
+                    sim_state, metrics = simulate_step(
                         sim_state, config, terrain, strategy, dt=0.016
                     )
                     frame = _build_frame(
-                        config, terrain, sim_state.arm_pivots, sim_state.steerings
+                        config, terrain,
+                        sim_state.tilt_pitch, sim_state.tilt_roll,
+                        sim_state.arm_reaches, sim_state.steerings,
+                        metrics=metrics,
                     )
                     frame["type"] = "frame"
                     frame["time"] = sim_state.time
+                    frame["cumulative_energy"] = sim_state.cumulative_energy
                     await ws.send_json(frame)
                     await asyncio.sleep(0.033)
 
@@ -180,7 +203,9 @@ async def websocket_endpoint(ws: WebSocket):
 
             elif msg_type == "get_frame":
                 frame = _build_frame(
-                    config, terrain, sim_state.arm_pivots, sim_state.steerings
+                    config, terrain,
+                    sim_state.tilt_pitch, sim_state.tilt_roll,
+                    sim_state.arm_reaches, sim_state.steerings,
                 )
                 frame["type"] = "frame"
                 await ws.send_json(frame)
