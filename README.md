@@ -2,6 +2,8 @@
 
 A kinematic simulation tool for a self-leveling tricycle robotic platform with parallelogram arm linkages. Designed as a power platform for uneven terrain (forestry, rough ground).
 
+![Wheely figure-8 simulation on bumpy terrain](demo.gif)
+
 ## The Platform
 
 Three-wheel-drive with all wheels independently steered. Two parallelogram arms extend from an apex wheel to two rear wheels, with a cross brace connecting them. The parallelogram geometry keeps the cargo platform level as the arms conform to terrain.
