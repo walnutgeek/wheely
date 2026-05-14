@@ -80,6 +80,12 @@
   </div>
 
   <div id="panel-controls" class="panel">
+    <h2>Presets</h2>
+    <div class="btn-row">
+      <div class="btn" id="btn-save">Save</div>
+      <div class="btn" id="btn-load">Load</div>
+    </div>
+
     <h2>Terrain</h2>
     <div class="control">
       <select id="terrain-select">
@@ -107,6 +113,8 @@
       <div class="btn" id="btn-ik">Solve IK</div>
       <div class="btn" id="btn-sim">Run Sim</div>
     </div>
+
+    <input type="file" id="file-input" accept=".json" style="display:none">
   </div>
 
   <div id="viewport"></div>
