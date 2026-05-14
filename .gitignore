@@ -9,3 +9,4 @@ build/
 .claude/
 .superpowers/
 output/
+.DS_Store
