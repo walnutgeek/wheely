@@ -215,6 +215,14 @@ export function updatePlatform(viz, frame, config) {
   const braceUpperCenter = new THREE.Vector3().addVectors(braceBUpper, braceCUpper).multiplyScalar(0.5);
   cargo.position.copy(braceUpperCenter);
 
+  // --- Apply body world position/yaw ---
+  if (frame.body_xy) {
+    viz.group.position.x = frame.body_xy[0];
+    viz.group.position.y = frame.body_z || 0;
+    viz.group.position.z = -(frame.body_xy[1] || 0);
+    viz.group.rotation.y = -(frame.body_yaw || 0);
+  }
+
   // --- Support triangle ---
   if (frame.support_triangle) {
     const verts = triMesh.geometry.attributes.position.array;

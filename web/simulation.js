@@ -85,6 +85,10 @@ document.getElementById('strategy-select').addEventListener('change', (e) => {
   clearChart();
 });
 
+document.getElementById('motion-select').addEventListener('change', (e) => {
+  send({ type: 'set_motion', name: e.target.value });
+});
+
 document.getElementById('btn-ik').addEventListener('click', () => {
   send({ type: 'solve_ik' });
 });
