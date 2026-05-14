@@ -6,7 +6,6 @@ build/
 *.egg
 .venv/
 .env
-.claude/
 .superpowers/
 output/
 .DS_Store
