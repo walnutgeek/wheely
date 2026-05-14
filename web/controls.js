@@ -64,6 +64,19 @@ export function updateInfoBar(frame) {
       (frame.tilt_roll * 180 / Math.PI).toFixed(1) + '\u00B0';
   }
 
+  // Display arm reach angles in degrees
+  if (frame.metrics && frame.metrics.reach_b_deg !== undefined) {
+    document.getElementById('info-reach-b').textContent =
+      frame.metrics.reach_b_deg.toFixed(1) + '\u00B0';
+    document.getElementById('info-reach-c').textContent =
+      frame.metrics.reach_c_deg.toFixed(1) + '\u00B0';
+  } else if (frame.arm_reaches) {
+    document.getElementById('info-reach-b').textContent =
+      (frame.arm_reaches[0] * 180 / Math.PI).toFixed(1) + '\u00B0';
+    document.getElementById('info-reach-c').textContent =
+      (frame.arm_reaches[1] * 180 / Math.PI).toFixed(1) + '\u00B0';
+  }
+
   if (frame.time !== undefined) {
     document.getElementById('info-time').textContent = frame.time.toFixed(2) + ' s';
   }
