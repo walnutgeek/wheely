@@ -53,6 +53,7 @@ class SimState:
     steerings: tuple[float, float, float] = (0.0, 0.0, 0.0)
     time: float = 0.0
     cumulative_energy: float = 0.0
+    path_theta: float = 0.0
 
     @classmethod
     def from_config(cls, config: PlatformConfig) -> SimState:
@@ -130,6 +131,65 @@ class SpringDamperStrategy:
         torque_b = -self.stiffness * disp_b - self.damping * vel_b
         torque_c = -self.stiffness * disp_c - self.damping * vel_c
         return (0.0, 0.0, torque_b, torque_c)
+
+
+
+# ---------------------------------------------------------------------------
+# Prescribed motion
+# ---------------------------------------------------------------------------
+
+def figure8_motion(
+    state: SimState,
+    dt: float,
+    speed: float = 0.3,
+    radius: float = 2.0,
+) -> SimState:
+    """Advance vehicle along a lemniscate (figure-8) path.
+
+    Path: x = R * sin(2*theta) / 2, y = R * sin(theta)
+    Speed is constant arc-length velocity.
+
+    Returns a new SimState with updated body_xy, body_yaw, path_theta.
+    All other fields are copied from the input state.
+    """
+    theta = state.path_theta
+
+    # Tangent vector: dx/dtheta, dy/dtheta
+    dx_dtheta = radius * math.cos(2 * theta)
+    dy_dtheta = radius * math.cos(theta)
+    ds_dtheta = math.sqrt(dx_dtheta**2 + dy_dtheta**2)
+
+    # Avoid division by zero at crossing point
+    if ds_dtheta < 1e-8:
+        ds_dtheta = 1e-8
+
+    # Advance theta for constant arc-length speed
+    d_theta = speed * dt / ds_dtheta
+    new_theta = theta + d_theta
+
+    # Compute new position on the lemniscate
+    new_x = radius * math.sin(2 * new_theta) / 2
+    new_y = radius * math.sin(new_theta)
+
+    # Yaw follows tangent at new position
+    dx_new = radius * math.cos(2 * new_theta)
+    dy_new = radius * math.cos(new_theta)
+    new_yaw = math.atan2(dy_new, dx_new)
+
+    return SimState(
+        body_xy=(new_x, new_y),
+        body_yaw=new_yaw,
+        path_theta=new_theta,
+        tilt_pitch=state.tilt_pitch,
+        tilt_roll=state.tilt_roll,
+        tilt_pitch_velocity=state.tilt_pitch_velocity,
+        tilt_roll_velocity=state.tilt_roll_velocity,
+        arm_reaches=state.arm_reaches,
+        arm_reach_velocities=state.arm_reach_velocities,
+        steerings=state.steerings,
+        time=state.time,
+        cumulative_energy=state.cumulative_energy,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -401,12 +461,17 @@ def simulate_step(
     dt: float = 0.01,
     arm_inertia: float = 1.0,
     tilt_inertia: float = 2.0,
+    motion: str = "stationary",
 ) -> tuple[SimState, StepMetrics]:
     """Advance simulation by one time step using semi-implicit Euler.
 
     Returns:
         (new_state, metrics) tuple.
     """
+    # --- Apply prescribed motion if active ---
+    if motion == "figure8":
+        state = figure8_motion(state, dt)
+
     # Get strategy torques: (torque_pitch, torque_roll, torque_reach_b, torque_reach_c)
     torques = strategy.compute_torques(state)
     strat_pitch, strat_roll, strat_reach_b, strat_reach_c = torques
@@ -515,6 +580,7 @@ def simulate_step(
         steerings=state.steerings,
         time=state.time + dt,
         cumulative_energy=new_cumulative_energy,
+        path_theta=state.path_theta,
     )
 
     # --- Build metrics ---
