@@ -4,7 +4,7 @@
 import { createScene } from '/static/scene.js';
 import { createPlatformGroup, updatePlatform } from '/static/platform-viz.js';
 import { createTerrainMesh } from '/static/terrain-viz.js';
-import { setupControls, readConfig, updateInfoBar } from '/static/controls.js';
+import { setupControls, readConfig, updateInfoBar, saveConfig, applyConfig } from '/static/controls.js';
 import { updateChart, clearChart } from '/static/metrics-chart.js';
 
 let ws = null;
@@ -103,6 +103,36 @@ document.getElementById('btn-sim').addEventListener('click', () => {
     btn.textContent = 'Stop';
     simRunning = true;
   }
+});
+
+document.getElementById('btn-save').addEventListener('click', () => {
+  saveConfig();
+});
+
+document.getElementById('btn-load').addEventListener('click', () => {
+  document.getElementById('file-input').click();
+});
+
+document.getElementById('file-input').addEventListener('change', (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = (evt) => {
+    try {
+      const json = JSON.parse(evt.target.result);
+      applyConfig(json, (config) => {
+        sendConfig(config);
+        send({ type: 'set_terrain', name: document.getElementById('terrain-select').value });
+        sendTerrainRequest();
+        send({ type: 'set_strategy', name: document.getElementById('strategy-select').value });
+        send({ type: 'solve_ik' });
+      });
+    } catch (err) {
+      console.error('Invalid config file:', err);
+    }
+  };
+  reader.readAsText(file);
+  e.target.value = '';
 });
 
 function animate() {
