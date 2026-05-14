@@ -1,0 +1,10 @@
+{
+  "arm_length": 0.92,
+  "arm_splay_angle_deg": 30,
+  "brace_position": 0.67,
+  "wheel_radius": 0.14,
+  "clearance": 0.03,
+  "arm_height": 0.24,
+  "terrain": "bumpy",
+  "strategy": "passive"
+}

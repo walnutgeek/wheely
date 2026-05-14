@@ -32,7 +32,8 @@ _L_COG = 0.3    # Distance from pivot to center-of-gravity along arm (m)
 _CONTACT_STIFFNESS = 5000.0
 _CONTACT_DAMPING = 100.0
 _TILT_DAMPING = 5.0      # Structural damping on tilt DOFs (friction at joints)
-_ARM_WEIGHT = 2.0        # Effective weight force pulling each arm downward (N)
+_ARM_WEIGHT = 10.0       # Effective weight force pulling each arm downward (N)
+_ARM_REACH_DAMPING = 3.0 # Structural damping on arm reach DOFs (friction at pivots)
 
 
 # ---------------------------------------------------------------------------
@@ -503,11 +504,15 @@ def simulate_step(
     arm_grav_b = _ARM_WEIGHT * config.arm_length * math.cos(state.arm_reaches[0])
     arm_grav_c = _ARM_WEIGHT * config.arm_length * math.cos(state.arm_reaches[1])
 
+    # --- Arm reach damping (friction at arm pivots) ---
+    arm_damp_b = -_ARM_REACH_DAMPING * state.arm_reach_velocities[0]
+    arm_damp_c = -_ARM_REACH_DAMPING * state.arm_reach_velocities[1]
+
     # --- Net torques ---
     net_pitch = strat_pitch + grav_torque_pitch + damp_pitch
     net_roll = strat_roll + grav_torque_roll + damp_roll
-    net_reach_b = strat_reach_b + contact_reach_b + arm_grav_b
-    net_reach_c = strat_reach_c + contact_reach_c + arm_grav_c
+    net_reach_b = strat_reach_b + contact_reach_b + arm_grav_b + arm_damp_b
+    net_reach_c = strat_reach_c + contact_reach_c + arm_grav_c + arm_damp_c
 
     # --- Semi-implicit Euler integration ---
     # Tilt
