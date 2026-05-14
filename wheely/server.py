@@ -21,6 +21,7 @@ from wheely.dynamics import (
     SimState,
     SpringDamperStrategy,
     StepMetrics,
+    figure8_motion,
     simulate_step,
 )
 from wheely.geometry import PlatformConfig
@@ -85,7 +86,8 @@ async def list_strategies():
     return list(STRATEGY_PRESETS.keys())
 
 
-def _build_frame(config, terrain, tilt_pitch, tilt_roll, arm_reaches, steerings, metrics=None):
+def _build_frame(config, terrain, tilt_pitch, tilt_roll, arm_reaches, steerings,
+                 body_xy=(0.0, 0.0), body_yaw=0.0, metrics=None):
     """Compute a single simulation frame for sending to the client."""
     fk = forward_kinematics(
         config,
@@ -106,6 +108,10 @@ def _build_frame(config, terrain, tilt_pitch, tilt_roll, arm_reaches, steerings,
         "tilt_roll": tilt_roll,
         "arm_reaches": list(arm_reaches),
     }
+    bx, by = body_xy
+    frame["body_xy"] = list(body_xy)
+    frame["body_yaw"] = body_yaw
+    frame["body_z"] = terrain.height(bx, by)
     if metrics is not None:
         frame["metrics"] = asdict(metrics)
     return frame
@@ -120,6 +126,7 @@ async def websocket_endpoint(ws: WebSocket):
     strategy = PassiveStrategy()
     sim_state = SimState.from_config(config)
     running = False
+    motion_mode = "stationary"
 
     try:
         while True:
@@ -147,6 +154,11 @@ async def websocket_endpoint(ws: WebSocket):
                 if name in STRATEGY_PRESETS:
                     strategy = STRATEGY_PRESETS[name]()
 
+            elif msg_type == "set_motion":
+                name = msg.get("name", "stationary")
+                if name in ("stationary", "figure8"):
+                    motion_mode = name
+
             elif msg_type == "set_position":
                 x = msg.get("x", 0.0)
                 y = msg.get("y", 0.0)
@@ -166,6 +178,8 @@ async def websocket_endpoint(ws: WebSocket):
                     config, terrain,
                     sim_state.tilt_pitch, sim_state.tilt_roll,
                     sim_state.arm_reaches, sim_state.steerings,
+                    body_xy=sim_state.body_xy,
+                    body_yaw=sim_state.body_yaw,
                 )
                 frame["type"] = "frame"
                 frame["levelness"] = ik.levelness
@@ -185,12 +199,15 @@ async def websocket_endpoint(ws: WebSocket):
                 sim_state.tilt_roll = ik.tilt_roll
                 while running:
                     sim_state, metrics = simulate_step(
-                        sim_state, config, terrain, strategy, dt=0.016
+                        sim_state, config, terrain, strategy, dt=0.016,
+                        motion=motion_mode,
                     )
                     frame = _build_frame(
                         config, terrain,
                         sim_state.tilt_pitch, sim_state.tilt_roll,
                         sim_state.arm_reaches, sim_state.steerings,
+                        body_xy=sim_state.body_xy,
+                        body_yaw=sim_state.body_yaw,
                         metrics=metrics,
                     )
                     frame["type"] = "frame"
@@ -204,6 +221,10 @@ async def websocket_endpoint(ws: WebSocket):
                         inner = json.loads(raw)
                         if inner.get("type") == "stop_sim":
                             running = False
+                        elif inner.get("type") == "set_motion":
+                            name = inner.get("name", "stationary")
+                            if name in ("stationary", "figure8"):
+                                motion_mode = name
                     except asyncio.TimeoutError:
                         pass
 
@@ -215,6 +236,8 @@ async def websocket_endpoint(ws: WebSocket):
                     config, terrain,
                     sim_state.tilt_pitch, sim_state.tilt_roll,
                     sim_state.arm_reaches, sim_state.steerings,
+                    body_xy=sim_state.body_xy,
+                    body_yaw=sim_state.body_yaw,
                 )
                 frame["type"] = "frame"
                 await ws.send_json(frame)

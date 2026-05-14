@@ -169,3 +169,44 @@ class TestSimulateStep:
             state, metrics = simulate_step(state, config, terrain, strategy, dt=0.01)
             assert metrics.cumulative_energy >= prev_energy - 1e-10
             prev_energy = metrics.cumulative_energy
+
+
+from wheely.dynamics import figure8_motion
+
+
+class TestFigure8Motion:
+    def test_advances_position(self):
+        """After one step, body_xy should have moved from origin."""
+        state = SimState.from_config(PlatformConfig())
+        new_state = figure8_motion(state, dt=0.1, speed=0.3, radius=2.0)
+        assert new_state.body_xy != (0.0, 0.0)
+        assert new_state.path_theta > 0.0
+
+    def test_stays_on_path(self):
+        """Position should match the lemniscate equation."""
+        state = SimState.from_config(PlatformConfig())
+        state = figure8_motion(state, dt=1.0, speed=0.3, radius=2.0)
+        theta = state.path_theta
+        R = 2.0
+        expected_x = R * math.sin(2 * theta) / 2
+        expected_y = R * math.sin(theta)
+        assert state.body_xy[0] == pytest.approx(expected_x, abs=1e-6)
+        assert state.body_xy[1] == pytest.approx(expected_y, abs=1e-6)
+
+    def test_completes_loop(self):
+        """After many steps, path_theta should exceed 2*pi (one full loop)."""
+        state = SimState.from_config(PlatformConfig())
+        for _ in range(5000):
+            state = figure8_motion(state, dt=0.01, speed=0.5, radius=2.0)
+        assert state.path_theta > 2 * math.pi
+
+    def test_yaw_follows_tangent(self):
+        """body_yaw should point along path tangent direction."""
+        state = SimState.from_config(PlatformConfig())
+        state = figure8_motion(state, dt=0.5, speed=0.3, radius=2.0)
+        theta = state.path_theta
+        R = 2.0
+        dx = R * math.cos(2 * theta)
+        dy = R * math.cos(theta)
+        expected_yaw = math.atan2(dy, dx)
+        assert state.body_yaw == pytest.approx(expected_yaw, abs=1e-6)
